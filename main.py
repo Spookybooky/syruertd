@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CopyTextButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -44,7 +44,9 @@ bot_stats = {
 
 users_page = {}
 commands_page = {}
-subscribed_cache = {}  # Кэш подписок (user_id: timestamp)
+subscribed_cache = {}
+
+POST_BUTTON_PRESETS = ["🔗Получить скрипт", "🔗 Получить чит"]
 
 
 # ============ ЗАГРУЗКА/СОХРАНЕНИЕ ============
@@ -113,7 +115,8 @@ def update_user_stats(user_id: int, username: str = None, first_name: str = None
     if user_id_str not in users_stats:
         users_stats[user_id_str] = {
             "first_seen": now, "last_seen": now, "first_name": first_name or "",
-            "username": username or "", "total_visits": 0, "daily_visits": {}, "total_commands": 0
+            "username": username or "", "total_visits": 0, "daily_visits": {}, "total_commands": 0,
+            "new_sub_shown": False
         }
     user = users_stats[user_id_str]
     user["last_seen"] = now
@@ -125,6 +128,8 @@ def update_user_stats(user_id: int, username: str = None, first_name: str = None
     if today not in user["daily_visits"]:
         user["daily_visits"][today] = 0
     user["daily_visits"][today] += 1
+    if "new_sub_shown" not in user:
+        user["new_sub_shown"] = False
     save_json(USERS_FILE, users_stats)
 
 
@@ -179,15 +184,14 @@ def get_all_users_stats() -> list:
     return result
 
 
-# ==================== ПРОВЕРКА ПОДПИСКИ (С КЭШЕМ) ====================
+# ==================== ПРОВЕРКА ПОДПИСКИ ====================
 async def is_user_subscribed(user_id: int, force_check: bool = False) -> bool:
     now = time.time()
     if not force_check and user_id in subscribed_cache:
-        if now - subscribed_cache[user_id] < 900:  # 15 минут
+        if now - subscribed_cache[user_id] < 900:
             return True
 
     for channel in REQUIRED_CHANNELS:
-        # Пропускаем рекламные ссылки без id
         if channel.get("no_check") or channel.get("id") is None:
             continue
         try:
@@ -202,10 +206,16 @@ async def is_user_subscribed(user_id: int, force_check: bool = False) -> bool:
     return True
 
 
-def get_subscription_keyboard():
+def get_subscription_keyboard(include_new_sub: bool = False):
+    """include_new_sub=True — добавляет рекламную кнопку (канал 4)"""
     keyboard = []
     for channel in REQUIRED_CHANNELS:
-        icon = "🚀" if channel.get("no_check") else "📢"
+        if channel.get("no_check"):
+            if not include_new_sub:
+                continue
+            icon = "🚀"
+        else:
+            icon = "📢"
         keyboard.append([InlineKeyboardButton(text=f"{icon} {channel['name']}", url=channel["link"])])
     keyboard.append([InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -249,7 +259,6 @@ async def send_command_response(message: types.Message, command_data: dict):
     media_file_id = command_data.get('media_file_id')
     file_id = command_data.get('file_id')
 
-    # Сначала медиа/текст (название)
     try:
         if media_type == 'photo' and media_file_id:
             await message.answer_photo(photo=media_file_id, caption=text)
@@ -260,7 +269,6 @@ async def send_command_response(message: types.Message, command_data: dict):
     except:
         await message.answer(text)
 
-    # Потом файл, если есть
     if file_id:
         try:
             await message.answer_document(document=file_id)
@@ -268,12 +276,12 @@ async def send_command_response(message: types.Message, command_data: dict):
             pass
 
 
-# ==================== СКРЫТЫЕ КОМАНДЫ (КАРТИНКИ МЕНЮ) ====================
+# ==================== КАРТИНКИ МЕНЮ ====================
 @dp.message(Command("menu1"))
 async def set_menu1_photo(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await message.answer("📸 Отправь мне картинку для главного меню (приветствия). Жду фото...\n\n❌ Отмена: /cancel")
+    await message.answer("📸 Отправь мне картинку для главного меню. Жду фото...\n\n❌ Отмена: /cancel")
     await state.set_state(MenuPhotoStates.waiting_for_menu1)
 
 
@@ -323,7 +331,7 @@ async def save_menu3_photo(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-# ==================== ОБРАБОТЧИКИ ====================
+# ==================== START ====================
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -344,9 +352,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 await message.answer(f"📝 Создание поста: {real_cmd}\n\nШаг 1/2: Отправь <b>текст поста</b> (можно с медиа).\n\n❌ Отмена: /cancel", parse_mode="HTML")
             return
         elif command_name in hidden_commands:
-            # ЖЕСТКАЯ ПРОВЕРКА ПОДПИСКИ ПРИ АКТИВАЦИИ КОМАНДЫ
             if not await is_user_subscribed(user_id, force_check=True):
-                await message.answer("⚠️ Для активации скрипта подпишитесь на каналы:", reply_markup=get_subscription_keyboard())
+                await message.answer("⚠️ Для активации скрипта подпишитесь на каналы:", reply_markup=get_subscription_keyboard(include_new_sub=False))
                 return
 
             bot_stats["commands_used"] += 1
@@ -365,8 +372,20 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await send_command_response(message, hidden_commands[command_name])
             return
 
+    # === Показ новой рекламной подписки ВСЕМ, но только 1 раз ===
+    user_data = users_stats.get(str(user_id), {})
+    if not user_data.get("new_sub_shown", False):
+        await message.answer(
+            "🚀 <b>Новая подписка!</b>\n\nПодпишитесь на наш новый канал:",
+            reply_markup=get_subscription_keyboard(include_new_sub=True),
+            parse_mode="HTML"
+        )
+        users_stats[str(user_id)]["new_sub_shown"] = True
+        save_json(USERS_FILE, users_stats)
+        return
+
     if not await is_user_subscribed(user_id):
-        await message.answer("⚠️ Подпишитесь на каналы:", reply_markup=get_subscription_keyboard())
+        await message.answer("⚠️ Подпишитесь на каналы:", reply_markup=get_subscription_keyboard(include_new_sub=False))
         return
 
     user_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -376,7 +395,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if is_admin(user_id):
         user_kb.inline_keyboard.insert(0, [InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
 
-    channels_text = "".join([f"• <a href='{ch['link']}'>{ch['name']}</a>\n" for ch in REQUIRED_CHANNELS])
+    channels_text = "".join([f"• <a href='{ch['link']}'>{ch['name']}</a>\n" for ch in REQUIRED_CHANNELS if not ch.get("no_check")])
     welcome_text = f"🎮 <b>С возвращением!</b>\n\n📢 Активация скриптов через:\n{channels_text}\n⚡ Бот работает 24/7\n\n💡 Предложения в <b>Поддержку</b>!"
 
     try:
@@ -389,6 +408,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer(welcome_text, reply_markup=user_kb, parse_mode="HTML")
 
 
+# ==================== АДМИН ПАНЕЛЬ ====================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -410,11 +430,34 @@ async def cmd_admin(message: types.Message):
     await message.answer(f"⚙️ АДМИН-ПАНЕЛЬ\n\n👥 Всего пользователей: {total_users}\n🎯 Всего команд активировано: {total_commands_all}\n📁 Скрытых команд: {len(hidden_commands)}", reply_markup=kb)
 
 
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("⛔ Доступ запрещен!", show_alert=True)
+    total_users = len(users_stats)
+    total_commands_all = sum(u.get('total_commands', 0) for u in users_stats.values())
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Моя статистика", callback_data="my_stats")],
+        [InlineKeyboardButton(text="📊 Статистика всех пользователей", callback_data="all_users_stats")],
+        [InlineKeyboardButton(text="⚡ Проверить скорость", callback_data="check_speed")],
+        [InlineKeyboardButton(text="➕ Добавить команду", callback_data="add_command")],
+        [InlineKeyboardButton(text="📋 Список команд", callback_data="list_commands")],
+        [InlineKeyboardButton(text="❌ Удалить команду", callback_data="delete_command")],
+        [InlineKeyboardButton(text="📨 Сделать рассылку", callback_data="start_mailing")],
+        [InlineKeyboardButton(text="🔄 Обновить данные юзеров", callback_data="update_users_data")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_start")]
+    ])
+    text = f"⚙️ АДМИН-ПАНЕЛЬ\n\n👥 Всего: {total_users}\n🎯 Команд: {total_commands_all}\n📁 Скрытых: {len(hidden_commands)}"
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
+
+
 # ==================== ПРОФИЛЬ ====================
 @dp.callback_query(F.data == "my_profile")
 async def my_profile(callback: types.CallbackQuery):
     if not await is_user_subscribed(callback.from_user.id, force_check=True):
-        await callback.message.answer("⚠️ Вы отписались от каналов! Подпишитесь снова:", reply_markup=get_subscription_keyboard())
+        await callback.message.answer("⚠️ Вы отписались от каналов! Подпишитесь снова:", reply_markup=get_subscription_keyboard(include_new_sub=False))
         return await callback.answer()
 
     user_id = callback.from_user.id
@@ -445,14 +488,17 @@ async def my_profile(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ==================== ОСТАЛЬНЫЕ АДМИН ФУНКЦИИ ====================
+# ==================== ПРОВЕРКА ПОДПИСКИ ====================
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription_callback(callback: types.CallbackQuery, state: FSMContext):
     if await is_user_subscribed(callback.from_user.id, force_check=True):
         await callback.answer("✅ Подписка подтверждена!", show_alert=True)
+        if str(callback.from_user.id) in users_stats:
+            users_stats[str(callback.from_user.id)]["new_sub_shown"] = True
+            save_json(USERS_FILE, users_stats)
         await cmd_start(callback.message, state)
     else:
-        await callback.message.answer("❌ Вы ещё не подписались на все каналы!", reply_markup=get_subscription_keyboard())
+        await callback.message.answer("❌ Вы ещё не подписались на все каналы!", reply_markup=get_subscription_keyboard(include_new_sub=False))
 
 
 @dp.callback_query(F.data == "back_to_start")
@@ -462,29 +508,7 @@ async def back_to_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("⛔ Доступ запрещен!", show_alert=True)
-    total_users = len(users_stats)
-    total_commands_all = sum(u.get('total_commands', 0) for u in users_stats.values())
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Моя статистика", callback_data="my_stats")],
-        [InlineKeyboardButton(text="📊 Статистика всех пользователей", callback_data="all_users_stats")],
-        [InlineKeyboardButton(text="⚡ Проверить скорость", callback_data="check_speed")],
-        [InlineKeyboardButton(text="➕ Добавить команду", callback_data="add_command")],
-        [InlineKeyboardButton(text="📋 Список команд", callback_data="list_commands")],
-        [InlineKeyboardButton(text="❌ Удалить команду", callback_data="delete_command")],
-        [InlineKeyboardButton(text="📨 Сделать рассылку", callback_data="start_mailing")],
-        [InlineKeyboardButton(text="🔄 Обновить данные юзеров", callback_data="update_users_data")],
-        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_start")]
-    ])
-    text = f"⚙️ АДМИН-ПАНЕЛЬ\n\n👥 Всего: {total_users}\n🎯 Команд: {total_commands_all}\n📁 Скрытых: {len(hidden_commands)}"
-    await callback.message.answer(text, reply_markup=kb)
-    await callback.answer()
-
-
+# ==================== СТАТИСТИКА ====================
 @dp.callback_query(F.data == "all_users_stats")
 async def all_users_stats(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -610,7 +634,7 @@ async def toggle_clicks(callback: types.CallbackQuery):
     await callback.answer("Изменено!")
 
 
-# ==================== ДОБАВЛЕНИЕ КОМАНД (4 ШАГА) ====================
+# ==================== ДОБАВЛЕНИЕ КОМАНД ====================
 @dp.callback_query(F.data == "add_command")
 async def add_command_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -645,10 +669,7 @@ async def add_command_photo(message: types.Message, state: FSMContext):
         return
     await state.update_data(media_type="photo", media_file_id=message.photo[-1].file_id)
     await state.set_state(AddCommandStates.waiting_for_file)
-    await message.answer(
-        "📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.",
-        parse_mode="HTML"
-    )
+    await message.answer("📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.", parse_mode="HTML")
 
 
 @dp.message(StateFilter(AddCommandStates.waiting_for_media), F.video)
@@ -657,10 +678,7 @@ async def add_command_video(message: types.Message, state: FSMContext):
         return
     await state.update_data(media_type="video", media_file_id=message.video.file_id)
     await state.set_state(AddCommandStates.waiting_for_file)
-    await message.answer(
-        "📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.",
-        parse_mode="HTML"
-    )
+    await message.answer("📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "skip_add_media", StateFilter(AddCommandStates.waiting_for_media))
@@ -738,7 +756,6 @@ async def show_command_created(message: types.Message, command_name: str, text: 
         f"📎 Файл: {has_file}\n"
         f"🔗 Ссылка:\n{bot_link}"
     )
-
     media_type = command_data.get('media_type')
     media_file_id = command_data.get('media_file_id')
     if media_type == 'photo' and media_file_id:
@@ -849,7 +866,16 @@ async def post_get_text(message: types.Message, state: FSMContext):
 
 async def ask_button_text(message: types.Message, state: FSMContext):
     await state.set_state(PostStates.waiting_for_button_text)
-    await message.answer("Шаг 2/2: Отправь <b>текст кнопки</b>:\nНапример: 🔗 Получить скрипт\n\n❌ Отмена: /cancel", parse_mode="HTML")
+    # Инлайн-кнопки с копированием текста
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=preset, copy_text=CopyTextButton(text=preset))] for preset in POST_BUTTON_PRESETS
+    ])
+    await message.answer(
+        "Шаг 2/2: Отправь <b>текст кнопки</b> или нажми на вариант ниже, чтобы скопировать:\n\n"
+        "❌ Отмена: /cancel",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
 
 
 @dp.message(StateFilter(PostStates.waiting_for_button_text), F.text)
@@ -879,7 +905,7 @@ async def post_get_button_text(message: types.Message, state: FSMContext):
         await message.answer(post_text, reply_markup=post_keyboard, parse_mode="HTML", disable_web_page_preview=True)
 
     await message.answer("Выбери действие:", reply_markup=preview_kb)
-    await state.clear()
+    # ❗ state НЕ очищаем — данные нужны для publish_post
 
 
 @dp.callback_query(F.data.startswith("publish_menu_"))
@@ -887,6 +913,8 @@ async def publish_menu(callback: types.CallbackQuery):
     command_name = callback.data.replace("publish_menu_", "", 1)
     kb = []
     for idx, ch in enumerate(REQUIRED_CHANNELS):
+        if ch.get("no_check"):
+            continue  # ❗ канал 4 не показываем в публикации
         kb.append([InlineKeyboardButton(text=f"📢 {ch['name']}", callback_data=f"publish_{idx}_{command_name}")])
     kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")])
     await callback.message.answer(f"📢 Куда опубликовать <code>{command_name}</code>?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
@@ -923,6 +951,7 @@ async def publish_post(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.answer(f"✅ Опубликовано в «{channel['name']}»!")
     except Exception as e:
         await callback.message.answer(f"❌ Ошибка: {e}")
+    await state.clear()
     await callback.answer()
 
 
