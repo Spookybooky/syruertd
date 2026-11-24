@@ -251,9 +251,9 @@ async def send_command_response(message: types.Message, command_data: dict):
 
     # Сначала медиа/текст (название)
     try:
-        if media_type == 'photo':
+        if media_type == 'photo' and media_file_id:
             await message.answer_photo(photo=media_file_id, caption=text)
-        elif media_type == 'video':
+        elif media_type == 'video' and media_file_id:
             await message.answer_video(video=media_file_id, caption=text)
         else:
             await message.answer(text)
@@ -629,7 +629,14 @@ async def add_command_get_name(message: types.Message, state: FSMContext):
         return await message.answer("❌ Имя занято! Введите другое:")
     await state.update_data(command_name=command_name)
     await state.set_state(AddCommandStates.waiting_for_media)
-    await message.answer("📷 Шаг 2/4: Отправьте медиа (фото или видео) для команды.\n\n❌ Отмена: /cancel")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭️ Пропустить", callback_data="skip_add_media")]
+    ])
+    await message.answer(
+        "📷 Шаг 2/4: Отправьте медиа (фото или видео) для команды.\n"
+        "Если медиа нет — нажмите «⏭️ Пропустить».\n\n❌ Отмена: /cancel",
+        reply_markup=kb
+    )
 
 
 @dp.message(StateFilter(AddCommandStates.waiting_for_media), F.photo)
@@ -638,7 +645,10 @@ async def add_command_photo(message: types.Message, state: FSMContext):
         return
     await state.update_data(media_type="photo", media_file_id=message.photo[-1].file_id)
     await state.set_state(AddCommandStates.waiting_for_file)
-    await message.answer("📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.", parse_mode="HTML")
+    await message.answer(
+        "📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.",
+        parse_mode="HTML"
+    )
 
 
 @dp.message(StateFilter(AddCommandStates.waiting_for_media), F.video)
@@ -647,14 +657,30 @@ async def add_command_video(message: types.Message, state: FSMContext):
         return
     await state.update_data(media_type="video", media_file_id=message.video.file_id)
     await state.set_state(AddCommandStates.waiting_for_file)
-    await message.answer("📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.", parse_mode="HTML")
+    await message.answer(
+        "📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.",
+        parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data == "skip_add_media", StateFilter(AddCommandStates.waiting_for_media))
+async def skip_add_media(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    await state.update_data(media_type=None, media_file_id=None)
+    await state.set_state(AddCommandStates.waiting_for_file)
+    await callback.message.edit_text(
+        "📎 Шаг 3/4: Теперь перешлите/отправьте <b>файл</b>, который бот запомнит и будет выдавать по команде.",
+        parse_mode="HTML"
+    )
+    await callback.answer()
 
 
 @dp.message(StateFilter(AddCommandStates.waiting_for_media))
 async def add_command_media_invalid(message: types.Message):
     if not is_admin(message.from_user.id):
         return
-    await message.answer("⚠️ На этом шаге нужно отправить <b>фото или видео</b>, а не текст.", parse_mode="HTML")
+    await message.answer("⚠️ На этом шаге нужно отправить <b>фото или видео</b>, либо нажать «⏭️ Пропустить».", parse_mode="HTML")
 
 
 @dp.message(StateFilter(AddCommandStates.waiting_for_file), F.document)
@@ -703,19 +729,21 @@ async def show_command_created(message: types.Message, command_name: str, text: 
         [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_panel")]
     ])
     has_file = "✅ есть" if command_data.get("file_id") else "❌ нет"
+    has_media = "✅ есть" if command_data.get("media_type") else "❌ нет"
     result_text = (
         f"✅ Команда создана!\n\n"
         f"📌 Имя: {command_name}\n"
         f"📝 Название: {text[:100]}\n"
+        f"🖼 Медиа: {has_media}\n"
         f"📎 Файл: {has_file}\n"
         f"🔗 Ссылка:\n{bot_link}"
     )
 
     media_type = command_data.get('media_type')
     media_file_id = command_data.get('media_file_id')
-    if media_type == 'photo':
+    if media_type == 'photo' and media_file_id:
         await message.answer_photo(photo=media_file_id, caption=result_text, reply_markup=keyboard)
-    elif media_type == 'video':
+    elif media_type == 'video' and media_file_id:
         await message.answer_video(video=media_file_id, caption=result_text, reply_markup=keyboard)
     else:
         await message.answer(result_text, reply_markup=keyboard)
