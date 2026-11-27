@@ -14,14 +14,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 logging.basicConfig(level=logging.INFO)
 
 # ============ КОНФИГ ============
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8878696401:AAGWYU0a0xAbK1-BjDof9Y86_O4kDH5g-5s")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8878696401:AAHyukEbDhGhqCZNLvMMGhQUeu_pQ8D0NLQ")
 
 REQUIRED_CHANNELS = [
     {"id": "@spookyscripts", "link": "https://t.me/spookyscripts", "name": "Spooky Scripts"},
     {"id": -1003788328996, "link": "https://t.me/+GMHDq5Fij2M5MmFh", "name": "Spooky mod"},
     {"id": -1004356916182, "link": "https://t.me/+GIrw6Qj8tkZiMzhh", "name": "OUTLOW SCRIPTS"},
-    # Рекламная редирект-ссылка — проверка подписки невозможна
-    {"id": None, "link": "https://telegram.me/linknibot/app?startapp=x_432rp", "name": "подписка на канал 4", "no_check": True}
+    # Рекламная редирект-ссылка — проверка подписки невозможна  
 ]
 
 ADMIN_IDS = [6621617827, 7326365411]
